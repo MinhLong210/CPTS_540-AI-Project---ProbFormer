@@ -1,0 +1,1 @@
+run python3 train_c10.py
