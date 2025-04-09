@@ -32,7 +32,6 @@ class ProbFormer(nn.Module):
         bias_qkv = mha.in_proj_bias  # [3*d_model] or None
         bias_o = mha.out_proj.bias   # [d_model] or None
 
-        # Compute Q, K, V for all heads at once (with biases)
         Q = torch.matmul(x, W_q.T)
         K = torch.matmul(x, W_k.T)
         V = torch.matmul(x, W_v.T)
@@ -46,8 +45,6 @@ class ProbFormer(nn.Module):
         V = V.view(batch_size, n, self.n_heads, self.d_k).permute(0, 2, 1, 3)  # [B, H, n, d_k]
 
         # Attention weights (batched over all tokens and heads)
-        # attn_scores = torch.einsum('bnhd,bmkd->bnmh', Q, K) / (self.d_k ** 0.5)  # [B, n, n, H]
-        # attn_weights = torch.softmax(attn_scores, dim=2)  # [B, n, n, H]
         attn_scores = torch.matmul(Q, K.transpose(-1, -2)) / (self.d_k ** 0.5)  # [B, H, n, n]
         attn_weights = torch.softmax(attn_scores, dim=-1)  # [B, H, n, n]
 
@@ -55,29 +52,25 @@ class ProbFormer(nn.Module):
         # Leaf nodes v^i_k: Define distribution (Gaussian) for V
         v_means = V  # [B, H, n, d_k], pretrained means from ViT
         v_vars = torch.ones_like(v_means) * torch.exp(sigma)  # [B, H, n, d_k], variance per v^i_k
-        v_dists = Normal(v_means, torch.sqrt(v_vars))  # Batched distribution for v^i_k
+        v_dists = Normal(v_means, torch.sqrt(v_vars))
 
         # Sum node: Head outputs as mixture of v^i_k
-        # head_means = torch.einsum('bnmh,bmhd->bnhd', attn_weights, v_means)  # [B, n, H, d_k]
         head_means = torch.matmul(attn_weights, v_means)  # [B, H, n, d_k]
         # Variance of the mixture: sum w_k * Var(v^i_k) + w_k * (v^i_k - mean)^2
-        # head_vars = torch.einsum('bnmh,bmhd->bnhd', attn_weights, v_vars)  # [B, n, H, d_k]
         head_vars = torch.matmul(attn_weights, v_vars) # [B, H, n, d_k]
         v_deviations = (v_means - head_means) ** 2  # [B, H, n, d_k]
         head_vars += torch.einsum('bhnm,bhmd->bhnd', attn_weights, v_deviations)  # Total variance
 
         # Product node: Concatenate heads into Z_j
-        # z_means = head_means.reshape(batch_size, n, self.d_model)  # [B, n, d_model]
         z_means = head_means.permute(0, 2, 1, 3).reshape(batch_size, n, self.d_model)
-        # z_vars = head_vars.reshape(batch_size, n, self.d_model)  # [B, n, d_model]
         z_vars = head_vars.permute(0, 2, 1, 3).reshape(batch_size, n, self.d_model)  # [B, n, d_model]
-        # import pdb; pdb.set_trace()
 
         # Output: y_j = Z_j W_O
         y_means = torch.matmul(z_means, W_o.T)  # [B, n, d_model]
         if bias_o is not None:
             y_means = y_means + bias_o.view(1, 1, -1)
-        # Approximate y_j variances (diagonal only)
+
+        # Approximate y_j variances (diagonal covar)
         # Var(y_j) = sum_i W_o[:, i]^2 * Var(Z_j[:, i]), assuming Z_j components independent
         W_o_sq = W_o**2  # [d_model, d_model]
         y_vars = torch.einsum('bnm,md->bnd', z_vars, W_o_sq)  # [B, n, d_model]
@@ -93,16 +86,12 @@ class ProbFormer(nn.Module):
         batch_size = x.shape[0]
         cls_token = self.vit.class_token.expand(batch_size, -1, -1)  # [B, 1, 768]
         x = torch.cat((cls_token, x), dim=1)  # [B, 197, 768]
-        # Add positional embeddings
         x = x + self.vit.encoder.pos_embedding
-        # Apply initial dropout
         x = self.vit.encoder.dropout(x)
 
         for l, layer in enumerate(self.vit.encoder.layers):
             residual = x
             x = layer.ln_1(x)
-            # x, att_weights = layer.self_attention(x, x, x)
-            # import pdb; pdb.set_trace()
             y_dists = self.build_pc_layer_batched(x, layer.self_attention, self.sigmas[l])
             x = layer.dropout(y_dists.loc) + residual # This is deterministic
             # x = layer.dropout(y_dists.rsample()) + residual # This allows uncertainty from sampling with reparam trick

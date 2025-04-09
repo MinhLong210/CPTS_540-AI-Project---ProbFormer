@@ -3,7 +3,7 @@ import torch.nn as nn
 import torchvision
 import torchvision.transforms as transforms
 
-# CIFAR-10 DataLoaders
+# CIFAR-10
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),

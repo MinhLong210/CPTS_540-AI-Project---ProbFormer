@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 import random
+import tqdm
 
 # Set seeds for reproducibility
 def set_seed(seed=42):
@@ -8,11 +9,10 @@ def set_seed(seed=42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)  # For multi-GPU setups
-    torch.backends.cudnn.deterministic = True  # Ensures deterministic behavior
-    torch.backends.cudnn.benchmark = False  # Disables optimization that might introduce randomness
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False 
 
-# Evaluation function with NLL and ECE
 def evaluate(model, dataloader, dataset_name, device):
     model.eval()
     correct = 0
@@ -34,8 +34,7 @@ def evaluate(model, dataloader, dataset_name, device):
             correct += (predicted == labels).sum().item()
 
             # NLL: Compute log-probability of true labels under cls_dist
-            # Convert labels to one-hot for Gaussian NLL (approximation)
-            labels_onehot = torch.zeros_like(logits).scatter_(1, labels.unsqueeze(1), 1)
+            # labels_onehot = torch.zeros_like(logits).scatter_(1, labels.unsqueeze(1), 1)
             nll = -cls_dist.log_prob(logits).mean()  # Simplified NLL using logits as proxy
             nll_total += nll.item() * labels.size(0)
 
