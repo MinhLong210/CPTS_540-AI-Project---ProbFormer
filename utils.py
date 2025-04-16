@@ -1,8 +1,8 @@
 import torch
 import numpy as np
 import random
-import tqdm
-
+from tqdm import tqdm
+from model import DeterministicViT
 # Set seeds for reproducibility
 def set_seed(seed=42):
     random.seed(seed)
@@ -24,32 +24,42 @@ def evaluate(model, dataloader, dataset_name, device):
     with torch.no_grad():
         for images, labels in tqdm(dataloader, desc=f"Evaluating {dataset_name}", leave=False):
             images, labels = images.to(device), labels.to(device)
-            logits, cls_dist = model(images)  # [B, 10], Normal([B, 10])
 
-            logits = cls_dist.rsample() # Sampling the logits using reparam
+            if isinstance(model, DeterministicViT):
+                logits = model(images) 
+            else:
+                logits, cls_dist = model(images)
 
-            # Accuracy
             _, predicted = torch.max(logits, 1)
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
 
-            # NLL: Compute log-probability of true labels under cls_dist
-            # labels_onehot = torch.zeros_like(logits).scatter_(1, labels.unsqueeze(1), 1)
-            nll = -cls_dist.log_prob(logits).mean()  # Simplified NLL using logits as proxy
-            nll_total += nll.item() * labels.size(0)
+            # nll = -cls_dist.log_prob(logits).mean()
+            # nll_total += nll.item() * labels.size(0)
+            # if isinstance(model, DeterministicViT):
+            #     # Compute probs from logits directly
+            #     probs = torch.softmax(logits, dim=1)
+            # else:
+            #     # If Probformer then use MC sampling to compute probs
+            #     # samples = cls_dist.rsample([100])
+            #     # probs = torch.softmax(samples, dim=-1).mean(dim=0)
+            
+            probs = torch.softmax(logits, dim=1)
 
-            # ECE: Confidence (softmax probs) vs. accuracy
-            probs = torch.softmax(logits, dim=1)  # [B, 10]
-            conf, pred = probs.max(1)  # Confidence scores [B]
-            accur = (pred == labels).float()  # Binary accuracy [B]
+            
+            # NLL
+            nll = -torch.log(probs[range(labels.size(0)), labels] + 1e-10)
+            nll_total += nll.sum().item()
+
+            conf, pred = probs.max(1)
+            accur = (pred == labels).float()
             confidences.append(conf.cpu().numpy())
             accuracies.append(accur.cpu().numpy())
 
-    # Compute metrics
     accuracy = 100 * correct / total
     nll_avg = nll_total / total
 
-    # ECE computation
+
     confidences = np.concatenate(confidences)
     accuracies = np.concatenate(accuracies)
     n_bins = 10

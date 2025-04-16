@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 
 class ProbFormer(nn.Module):
-    def __init__(self, vit, sigma_init=0.1, num_classes=10):
+    def __init__(self, vit, sigma_init=1.0, num_classes=10):
         super().__init__()
         self.vit = vit
         self.d_model = vit.hidden_dim  # 768
@@ -13,14 +13,6 @@ class ProbFormer(nn.Module):
         self.sigmas = nn.ParameterList([nn.Parameter(torch.tensor(sigma_init)) 
                                        for _ in range(self.num_layers)])
         # self.classifier = vit.heads.head
-
-        # New classification head for CIFAR-10
-        # self.classifier = nn.Sequential(
-        #     nn.Linear(self.d_model, 256),  # [768, 256]
-        #     nn.ReLU(),
-        #     nn.Linear(256, num_classes),  # [256, 10]
-        # )
-        
         self.classifier = nn.Linear(self.d_model, num_classes)  # [768, 10]
         
 
@@ -65,6 +57,7 @@ class ProbFormer(nn.Module):
         z_means = head_means.permute(0, 2, 1, 3).reshape(batch_size, n, self.d_model)
         z_vars = head_vars.permute(0, 2, 1, 3).reshape(batch_size, n, self.d_model)  # [B, n, d_model]
 
+
         # Output: y_j = Z_j W_O
         y_means = torch.matmul(z_means, W_o.T)  # [B, n, d_model]
         if bias_o is not None:
@@ -77,7 +70,7 @@ class ProbFormer(nn.Module):
 
         # Distribution with diagonal variances
         y_dists = Normal(y_means, torch.sqrt(y_vars))  # [B, n, d_model]
-        
+
         return y_dists
     
     def forward(self, input):
@@ -112,3 +105,47 @@ class ProbFormer(nn.Module):
         cls_dist = Normal(logits_mean, torch.sqrt(logits_var))  # [B, 10]
 
         return logits, cls_dist
+
+    # Probabilistic reasoning without sampling
+    def class_probabilities(self, x):
+        """
+        Approximate p(y=c|x) using softmax of cls_dist.loc (no sampling).
+        Returns: probs [B, num_classes]
+        """
+        logits, _ = self.forward(x)
+        probs = torch.softmax(logits, dim=-1)  # [B, num_classes]
+        return probs
+
+    def confidence_intervals(self, x, confidence=0.95):
+        """
+        Compute confidence intervals for logits using cls_dist.
+        Returns: lower, upper bounds [B, num_classes]
+        """
+        _, cls_dist = self.forward(x)
+        z = torch.distributions.Normal(0, 1).icdf(torch.tensor((1 + confidence) / 2))
+        lower = cls_dist.loc - z * cls_dist.scale
+        upper = cls_dist.loc + z * cls_dist.scale
+        return lower, upper
+
+    def marginal_probability(self, x, classes):
+        """
+        Compute p(y in classes|x) for a subset of classes.
+        Returns: marginal prob [B]
+        """
+        probs = self.class_probabilities(x)  # [B, num_classes]
+        return probs[:, classes].sum(dim=1)  # [B]
+
+
+class DeterministicViT(nn.Module):
+    def __init__(self, vit, num_classes=10):
+        super().__init__()
+        self.vit = vit
+        # Freeze backbone
+        for param in self.vit.parameters():
+            param.requires_grad = False
+        # Replace classifier head
+        self.vit.heads = nn.Linear(vit.hidden_dim, num_classes)  # 768 -> 10
+
+    def forward(self, x):
+        logits = self.vit(x)
+        return logits
