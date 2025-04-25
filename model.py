@@ -86,7 +86,7 @@ class ProbFormer(nn.Module):
             residual = x
             x = layer.ln_1(x)
             y_dists = self.build_pc_layer_batched(x, layer.self_attention, self.sigmas[l])
-            x = layer.dropout(y_dists.loc) + residual # This is deterministic
+            x = layer.dropout(y_dists.loc) + residual # This is deterministic since we are only using the mean
             # x = layer.dropout(y_dists.rsample()) + residual # This allows uncertainty from sampling with reparam trick
             residual = x
             x = layer.ln_2(x)
